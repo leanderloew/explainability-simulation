@@ -55,6 +55,8 @@ class EncoderLayer(nn.Module):
         x2 = self.norm_1(self.dropout_1(x1)+x)        
         x3 = self.norm_2(self.dropout_2(self.ff(x2))+x2)
         
+        #x2 = self.dropout_1(x1)        
+        #x3 = self.dropout_2(self.ff(x2))
         return x3,atn
 
 class Norm(nn.Module):
@@ -153,3 +155,79 @@ class MultiHeadAttention(nn.Module):
         output = self.out(concat)
     
         return output,w    
+#A hierachical model 
+
+#Main idea: We dont want context aware features, but a context aware querry, 
+
+class simple_fraud_model_exp(nn.Module):
+    def __init__(self, d_model=32,heads=1,nlay=1,dropout=0,SelfA=True,return_w=False):
+        
+        super(simple_fraud_model_exp,self).__init__()
+        self.return_w=return_w
+        emb_d_1=int(d_model/2)
+        emb_d_2=int(d_model/2)
+        
+        #two embeddings 
+        self.embedding_1=nn.Embedding(num_embeddings=21,embedding_dim=emb_d_1)
+        self.embedding_2=nn.Embedding(num_embeddings=21,embedding_dim=emb_d_2-1)
+
+        
+        if SelfA==True:
+            self.encoder_layers=EncoderLayer(d_model=d_model,heads=heads,dropout=dropout,share_params=True)
+
+        if SelfA==False:
+            self.encoder_layers=FeedForward(d_model)
+
+        self.mula=multi_attention(input_dim=d_model,key_dim=d_model,nheads=1,return_weights=True,value_dim=d_model)
+
+        self.fully_con=nn.Linear(d_model,d_model*4)
+        self.relu=nn.ReLU()
+        
+        self.fully_con_1=nn.Linear(d_model*4,d_model*4)
+        self.relu_1=nn.ReLU()
+        
+        self.final_fully_con=nn.Linear(d_model*4,1)
+        self.sig=nn.Sigmoid()
+        self.selfa=SelfA
+        
+        self.v2_ex=nn.Linear(d_model,d_model)
+        self.k2_ex=nn.Linear(d_model,d_model)
+        self.q2_ex=nn.Linear(d_model,d_model)
+        self.soft=torch.nn.Sigmoid()       
+        
+    def forward(self, x1,x2,x3,return_w):
+        e1=self.embedding_1(x1)
+        e2=self.embedding_2(x2)
+
+        cat=torch.cat([e1,e2,x3.unsqueeze(2)],dim=2)
+        if self.selfa==True:
+            feat,w2=self.encoder_layers(cat)
+        else:
+            feat=self.encoder_layers(cat)
+        
+        
+        ag,weights_=self.mula(feat)
+        q2=self.q2_ex(ag.squeeze()).unsqueeze(dim=2)
+        k2=self.k2_ex(feat)
+        v2=self.v2_ex(feat)
+        
+        #Here instead of using the ag directly we use the ag as a seconde kind of query to aggregate with it. 
+        #doesnt really change much.
+        weights=self.soft(torch.einsum('btj,bjk->btk', k2, q2))
+        ag=torch.einsum('btj,btk->bjk', v2, weights)        
+        
+        fc=self.relu(self.fully_con(ag.squeeze()))
+        fc=self.relu_1(self.fully_con_1(fc))
+        
+        preds=self.sig(self.final_fully_con(fc))
+        if return_w==False:
+            return preds.squeeze()
+        
+        if return_w==True:
+            if self.selfa==True:
+                #w2=w2.squeeze()
+                #w2=w2.permute((0,2,1))
+                #weights=torch.bmm(w2,weights)
+                return preds.squeeze(),torch.bmm(w2.squeeze(),weights)
+            else:
+                return preds.squeeze(),weights
