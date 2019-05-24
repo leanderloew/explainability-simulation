@@ -29,7 +29,9 @@ class multi_attention(torch.nn.Module):
         keys=self.key_extract(embeds)
         
         similarity=torch.einsum('btj,jk->btk', keys, self.query)
-        weights=self.soft(similarity)
+        #weights=self.soft(similarity)
+        weights=logistic(similarity)
+        #weights=F.softmax(similarity, dim=1)
         
         #Aggregate
         aggregations=torch.einsum('btj,btk->bjk', value, weights)
@@ -39,21 +41,36 @@ class multi_attention(torch.nn.Module):
         else:
             return aggregations
         
+
+#class logistic(nn.Module):
+#    
+#    def __init__(c=1,a=20,b=np.e):
+#        super().__init__()
+#        self.c=c
+#        self.a=a
+#        self.b=b
+#    def forward(x):
+#        
+#        return self.c/(1+self.a*self.b**(-x))
+    
+def logistic(x,c=1,a=20,b=np.e):
+    return c/(1+a*b**(-x))       
+        
 class EncoderLayer(nn.Module):
     def __init__(self, d_model, heads, dropout = 0.1,nheads=200,share_params=True):
         super().__init__()
         self.norm_1 = Norm(d_model)
         self.norm_2 = Norm(d_model)
         self.attn = MultiHeadAttention(heads, d_model,nheads=200,share_params=share_params)
-        self.ff = FeedForward(d_model,nheads=200,share_params=share_params)
+        self.ff = FeedForward(d_model,nheads=200,share_params=share_params,dropout=0)
         self.dropout_1 = nn.Dropout(dropout)
         self.dropout_2 = nn.Dropout(dropout)
         
     def forward(self, x):
         x1,atn=self.attn(x,x,x)
         #here we add the original x 
-        x2 = self.norm_1(self.dropout_1(x1)+x)        
-        x3 = self.norm_2(self.dropout_2(self.ff(x2))+x2)
+        #x2 = self.norm_1(self.dropout_1(x1)+x)        
+        x3 = self.ff(x1)
         
         #x2 = self.dropout_1(x1)        
         #x3 = self.dropout_2(self.ff(x2))
@@ -80,9 +97,11 @@ def attention(q, k, v, d_k, mask=None, dropout=None):
     if mask is not None:
             mask = mask.unsqueeze(1)
             scores = scores.masked_fill(mask == 0, -1e9)
-
-    scores = F.softmax(scores, dim=-1)
-
+    #scores=scores-7
+    #scores = F.softmax(scores, dim=-1)
+    scores = logistic(scores)
+    #score=torch.relu(scores)
+    #scores = F.sigmoid(scores)
     #if dropout is not None:
     #    scores = dropout(scores)
 
@@ -98,14 +117,14 @@ class FeedForward(nn.Module):
             self.linear_1 = simple_projection_3d(d_model, d_ff,nheads)
             self.linear_2 = simple_projection_3d(d_ff, d_model,nheads)
         if share_params==True:
-            self.linear_1 = nn.Linear(d_model, d_ff)
-            self.linear_2 = nn.Linear(d_ff, d_model)
+            self.linear_1 = nn.Linear(d_model, d_model)
+            self.linear_2 = nn.Linear(d_model, d_model)
         
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x):
-        x = self.dropout(F.relu(self.linear_1(x)))
-        x = self.linear_2(x)
+        x = F.relu(self.linear_1(x))
+        #x = self.linear_2(x)
         return x
     
 class MultiHeadAttention(nn.Module):
@@ -125,6 +144,10 @@ class MultiHeadAttention(nn.Module):
             self.q_linear = nn.Linear(d_model, d_model)
             self.v_linear = nn.Linear(d_model, d_model)
             self.k_linear = nn.Linear(d_model, d_model)
+            
+            #self.q_linear.bias=nn.Parameter(torch.tensor(np.repeat(0,d_model)).float())
+            #self.v_linear.bias=nn.Parameter(torch.tensor(np.repeat(0,d_model)).float())
+            #self.k_linear.bias=nn.Parameter(torch.tensor(np.repeat(0,d_model)).float())
                         
         self.dropout = nn.Dropout(dropout)
         self.out = nn.Linear(d_model, d_model)
@@ -169,7 +192,7 @@ class simple_fraud_model_exp(nn.Module):
         
         #two embeddings 
         self.embedding_1=nn.Embedding(num_embeddings=21,embedding_dim=emb_d_1)
-        self.embedding_2=nn.Embedding(num_embeddings=21,embedding_dim=emb_d_2-1)
+        self.embedding_2=nn.Embedding(num_embeddings=21,embedding_dim=emb_d_2)
 
         
         if SelfA==True:
@@ -179,7 +202,9 @@ class simple_fraud_model_exp(nn.Module):
             self.encoder_layers=FeedForward(d_model)
 
         self.mula=multi_attention(input_dim=d_model,key_dim=d_model,nheads=1,return_weights=True,value_dim=d_model)
-
+        
+        self.initial_linear=nn.Linear(d_model,d_model)
+        
         self.fully_con=nn.Linear(d_model,d_model*4)
         self.relu=nn.ReLU()
         
@@ -199,7 +224,7 @@ class simple_fraud_model_exp(nn.Module):
         e1=self.embedding_1(x1)
         e2=self.embedding_2(x2)
 
-        cat=torch.cat([e1,e2,x3.unsqueeze(2)],dim=2)
+        cat=torch.cat([e1,e2],dim=2)
         if self.selfa==True:
             feat,w2=self.encoder_layers(cat)
         else:
